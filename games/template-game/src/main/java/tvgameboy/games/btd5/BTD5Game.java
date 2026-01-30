@@ -28,6 +28,36 @@ public final class BTD5Game implements Game {
     private int round = 1;
     private boolean roundStarted = false;
     private GamePath gamePath;
+    // UI label to show money/lives/round
+    private javax.swing.JLabel infoLabel;
+    // number of active projectiles/effects (updated by canvas)
+    private volatile int activeProjectiles = 0;
+    // Selected tower type for placement
+    private TowerType selectedTowerType = TowerType.NORMAL;
+
+    private enum TowerType {
+        NORMAL,
+        NINJA
+    }
+
+    // Costs for tower types
+    private static final int COST_NORMAL = 1000;
+    private static final int COST_NINJA = 1500;
+
+    private static int getCostFor(TowerType t) {
+        return t == TowerType.NINJA ? COST_NINJA : COST_NORMAL;
+    }
+
+    private static String getDescriptionFor(TowerType t) {
+        return t == TowerType.NINJA ? "Ninja: throws shurikens at nearby balloons (range ~100)" : "Normal: basic monkey that pops balloons up close";
+    }
+
+    // Visual / gameplay constants
+    private static final int BALLOON_RADIUS = 6; // smaller balloons
+    private static final int SHURIKEN_RADIUS = 3;
+    private static final int PEBBLE_RADIUS = 4;
+    private static final int MONEY_PER_POP = 50; // reward per popped balloon
+
 
     @Override
     public JComponent getView(Runnable returnToMenu) {
@@ -60,12 +90,14 @@ public final class BTD5Game implements Game {
         gamePath.addPoint(740, 150);
         gamePath.addPoint(780, 200);
 
+
+
         JPanel mainPanel = new JPanel(new BorderLayout());
-        mainPanel.setBackground(new Color(5, 5, 5));
+        mainPanel.setBackground(new Color(30, 30, 30));
 
         // Top Bar with Info and Buttons
         JPanel topBar = new JPanel(new BorderLayout());
-        topBar.setBackground(new Color(5, 5, 5));
+        topBar.setBackground(new Color(30, 30, 30));
         topBar.setBorder(javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12));
 
         JButton menuButton = new JButton("Menu");
@@ -76,11 +108,11 @@ public final class BTD5Game implements Game {
         menuButton.addActionListener(event -> returnToMenu.run());
 
         JPanel infoPanel = new JPanel();
-        infoPanel.setBackground(new Color(5, 5, 5));
-        JLabel infoLabel = new JLabel("Money: $" + money + " | Lives: " + lives + " | Round: " + round);
-        infoLabel.setForeground(new Color(255, 255, 255));
-        infoLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
-        infoPanel.add(infoLabel);
+        infoPanel.setBackground(new Color(30, 30, 30));
+        this.infoLabel = new javax.swing.JLabel("Money: $" + money + " | Lives: " + lives + " | Round: " + round);
+        this.infoLabel.setForeground(new Color(255, 255, 255));
+        this.infoLabel.setFont(new Font("Segoe UI", Font.BOLD, 14));
+        infoPanel.add(this.infoLabel);
 
         JButton startRoundButton = new JButton("Start Round");
         startRoundButton.setFont(new Font("Segoe UI", Font.BOLD, 14));
@@ -91,16 +123,48 @@ public final class BTD5Game implements Game {
             if (!roundStarted) {
                 roundStarted = true;
                 startRoundButton.setEnabled(false);
-                infoLabel.setText("Money: $" + money + " | Lives: " + lives + " | Round: " + round + " (RUNNING)");
-                // Simulate round end after 5 seconds
+                this.infoLabel.setText("Money: $" + money + " | Lives: " + lives + " | Round: " + round + " (RUNNING)");
+                // Spawn some balloons over time so towers can interact
                 new Thread(() -> {
                     try {
-                        Thread.sleep(5000);
+                        for (int i = 0; i < 8; i++) {
+                            Balloon b = new Balloon();
+                            // initialize at first point if available
+                            if (gamePath.getPoints().size() > 0) {
+                                int[] p = gamePath.getPoints().get(0);
+                                b.x = p[0];
+                                b.y = p[1];
+                            }
+                            // avoid overlapping: wait while a balloon is too close to start
+                            synchronized (balloons) {
+                                while (true) {
+                                    boolean tooClose = false;
+                                    for (Balloon ob : balloons) {
+                                        double dx = ob.x - b.x;
+                                        double dy = ob.y - b.y;
+                                        if (Math.hypot(dx, dy) < BALLOON_RADIUS * 4) { tooClose = true; break; }
+                                    }
+                                    if (!tooClose) break;
+                                    Thread.sleep(150);
+                                }
+                                balloons.add(b);
+                            }
+                            Thread.sleep(500);
+                        }
+
+                        // Wait until all balloons and active projectiles/effects are finished
+                        while (true) {
+                            synchronized (balloons) {
+                                if (balloons.isEmpty() && activeProjectiles == 0) break;
+                            }
+                            Thread.sleep(200);
+                        }
+
                         roundStarted = false;
                         round++;
-                        money += 200;
+                        money += 500; // increased reward per round
                         startRoundButton.setEnabled(true);
-                        infoLabel.setText("Money: $" + money + " | Lives: " + lives + " | Round: " + round);
+                        this.infoLabel.setText("Money: $" + money + " | Lives: " + lives + " | Round: " + round);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                     }
@@ -115,15 +179,43 @@ public final class BTD5Game implements Game {
         // Game Canvas
         GameCanvas gameCanvas = new GameCanvas(this);
 
+        // Selection panel for monkey types
+        JPanel selectPanel = new JPanel();
+        selectPanel.setBackground(new Color(30, 30, 30));
+        selectPanel.setBorder(javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12));
+        JButton normalButton = new JButton("Normal ($" + COST_NORMAL + ")");
+        JButton ninjaButton = new JButton("Ninja ($" + COST_NINJA + ")");
+        normalButton.setToolTipText(getDescriptionFor(TowerType.NORMAL));
+        ninjaButton.setToolTipText(getDescriptionFor(TowerType.NINJA));
+        normalButton.setFocusPainted(false);
+        ninjaButton.setFocusPainted(false);
+        normalButton.addActionListener(e -> {
+            selectedTowerType = TowerType.NORMAL;
+            normalButton.setBackground(new Color(0, 150, 150));
+            ninjaButton.setBackground(null);
+        });
+        ninjaButton.addActionListener(e -> {
+            selectedTowerType = TowerType.NINJA;
+            ninjaButton.setBackground(new Color(0, 150, 150));
+            normalButton.setBackground(null);
+        });
+        normalButton.setBackground(new Color(0, 150, 150)); // default selected
+        selectPanel.add(new JLabel("Select Monkey:"));
+        selectPanel.add(normalButton);
+        selectPanel.add(ninjaButton);
+
         mainPanel.add(topBar, BorderLayout.NORTH);
+        mainPanel.add(selectPanel, BorderLayout.WEST);
         mainPanel.add(gameCanvas, BorderLayout.CENTER);
         return mainPanel;
     }
 
     public void addTower(int x, int y) {
-        if (money >= 1000) {
-            towers.add(new Tower(x, y));
-            money -= 1000;
+        int cost = getCostFor(selectedTowerType);
+        if (money >= cost) {
+            towers.add(new Tower(x, y, selectedTowerType));
+            money -= cost;
+            if (this.infoLabel != null) this.infoLabel.setText("Money: $" + money + " | Lives: " + lives + " | Round: " + round);
         }
     }
 
@@ -149,18 +241,159 @@ public final class BTD5Game implements Game {
 
     private static class GameCanvas extends JPanel {
         private BTD5Game game;
+        private javax.swing.Timer timer;
+        private List<Effect> effects = new ArrayList<>();
+        private List<Shuriken> shurikens = new ArrayList<>();
+        private List<Pebble> pebbles = new ArrayList<>();
+        private java.awt.image.BufferedImage normalSprite;
+        private java.awt.image.BufferedImage ninjaSprite;
 
         GameCanvas(BTD5Game game) {
             this.game = game;
-            setBackground(new Color(50, 100, 50));
-            
+            setBackground(new Color(20, 20, 20));
+            setDoubleBuffered(true);
+
             addMouseListener(new MouseAdapter() {
                 @Override
                 public void mouseClicked(MouseEvent e) {
-                    game.addTower(e.getX(), e.getY());
+                    int mx = e.getX();
+                    int my = e.getY();
+                    // If clicking an existing tower -> select it and show range
+                    for (Tower t : game.getTowers()) {
+                        double dx = t.getX() - mx;
+                        double dy = t.getY() - my;
+                        if (Math.hypot(dx, dy) <= 16) {
+                            for (Tower ot : game.getTowers()) ot.selected = false;
+                            t.selected = true;
+                            repaint();
+                            return;
+                        }
+                    }
+
+                    // Otherwise try to place a tower (but not on the road)
+                    if (game.isPointOnRoad(mx, my)) {
+                        if (game.infoLabel != null) {
+                            String prev = game.infoLabel.getText();
+                            game.infoLabel.setText("Cannot place on road");
+                            new javax.swing.Timer(1500, ev -> {
+                                game.infoLabel.setText(prev);
+                                ((javax.swing.Timer) ev.getSource()).stop();
+                            }).start();
+                        }
+                        return;
+                    }
+
+                    game.addTower(mx, my);
                     repaint();
                 }
             });
+
+            // Generate simple sprites programmatically so we don't need external files
+            normalSprite = createSprite(TowerType.NORMAL, 30);
+            ninjaSprite = createSprite(TowerType.NINJA, 30);
+
+            timer = new javax.swing.Timer(40, ev -> {
+                updateGame();
+                repaint();
+            });
+            timer.start();
+        }
+
+        private void updateGame() {
+            List<int[]> points = game.getPath().getPoints();
+            if (points.size() < 2) return;
+
+            List<Balloon> toRemove = new ArrayList<>();
+            for (Balloon b : new ArrayList<>(game.getBalloons())) {
+                if (b.pathIndex >= points.size() - 1) {
+                    // reached end: lose a life and schedule removal
+                    toRemove.add(b);
+                } else {
+                    int[] p0 = points.get(b.pathIndex);
+                    int[] p1 = points.get(b.pathIndex + 1);
+                    b.progress += 0.02;
+                    if (b.progress >= 1.0) {
+                        b.progress = 0;
+                        b.pathIndex++;
+                    }
+                    double t = b.progress;
+                    b.x = (int) (p0[0] * (1 - t) + p1[0] * t);
+                    b.y = (int) (p0[1] * (1 - t) + p1[1] * t);
+                }
+            }
+            for (Balloon b : toRemove) {
+                game.getBalloons().remove(b);
+                // decrement lives when balloon reaches end
+                game.lives = Math.max(0, game.lives - 1);
+                if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
+            }
+            // Towers attack: ninjas spawn shurikens, normals spawn pebbles
+            for (Tower t : game.getTowers()) {
+                if (t.cooldown > 0) {
+                    t.cooldown--;
+                } else {
+                    Balloon nearest = null;
+                    double bestDist = Double.MAX_VALUE;
+                    for (Balloon b : game.getBalloons()) {
+                        double dx = t.getX() - b.getX();
+                        double dy = t.getY() - b.getY();
+                        double dist = Math.hypot(dx, dy);
+                        if (dist < t.range && dist < bestDist) {
+                            bestDist = dist;
+                            nearest = b;
+                        }
+                    }
+                    if (nearest != null) {
+                        if (t.type == TowerType.NINJA) {
+                            shurikens.add(new Shuriken(t.getX(), t.getY(), nearest));
+                            t.cooldown = 20; // ninja cooldown
+                        } else { // NORMAL
+                            pebbles.add(new Pebble(t.getX(), t.getY(), nearest));
+                            t.cooldown = 30; // normal cooldown
+                        }
+                    }
+                }
+            }
+
+            // Update shurikens
+            List<Shuriken> deadS = new ArrayList<>();
+            List<Balloon> popped = new ArrayList<>();
+            for (Shuriken s : new ArrayList<>(shurikens)) {
+                s.update();
+                if (!s.alive) {
+                    deadS.add(s);
+                    if (s.target != null) popped.add(s.target);
+                    effects.add(new Effect((int)s.x, (int)s.y, (int)s.x, (int)s.y, 8));
+                }
+            }
+            shurikens.removeAll(deadS);
+
+            // Update pebbles
+            List<Pebble> deadP = new ArrayList<>();
+            for (Pebble p : new ArrayList<>(pebbles)) {
+                p.update();
+                if (!p.alive) {
+                    deadP.add(p);
+                    if (p.target != null) popped.add(p.target);
+                    effects.add(new Effect((int)p.x, (int)p.y, (int)p.x, (int)p.y, 6));
+                }
+            }
+            pebbles.removeAll(deadP);
+
+            // Award money and remove popped balloons (avoid double-counting)
+            if (!popped.isEmpty()) {
+                java.util.Set<Balloon> unique = new java.util.HashSet<>(popped);
+                int count = unique.size();
+                game.money += count * MONEY_PER_POP;
+                if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
+                for (Balloon b : unique) game.getBalloons().remove(b);
+            }
+
+            // decay effects
+            effects.removeIf(effect -> --effect.ttl <= 0);
+
+            // update active projectiles count so round thread can wait for them
+            game.activeProjectiles = shurikens.size() + pebbles.size() + effects.size();
         }
 
         @Override
@@ -168,54 +401,101 @@ public final class BTD5Game implements Game {
             super.paintComponent(g);
             Graphics2D g2d = (Graphics2D) g;
             g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            
+
             // Draw path with smooth curves
             if (game.gamePath != null && game.gamePath.getPoints().size() > 1) {
                 List<int[]> points = game.gamePath.getPoints();
-                
+
                 // Create smooth path using quadratic Bezier curves
                 Path2D path = new Path2D.Double();
                 path.moveTo(points.get(0)[0], points.get(0)[1]);
-                
+
                 for (int i = 1; i < points.size(); i++) {
                     int[] p0 = points.get(i - 1);
                     int[] p1 = points.get(i);
-                    
+
                     if (i < points.size() - 1) {
                         int[] p2 = points.get(i + 1);
-                        // Calculate control point for smooth curve
                         int cpx = p1[0];
                         int cpy = p1[1];
-                        // Endpoint of quadratic curve (midpoint between current and next)
                         int endx = (p1[0] + p2[0]) / 2;
                         int endy = (p1[1] + p2[1]) / 2;
                         path.quadTo(cpx, cpy, endx, endy);
                     } else {
-                        // Last point - straight line to end
                         path.lineTo(p1[0], p1[1]);
                     }
                 }
-                
-                g2d.setColor(new Color(139, 90, 43)); // Brown road color
-                g2d.setStroke(new BasicStroke(40, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+
+                g2d.setColor(new Color(220, 180, 110)); // brighter, higher-contrast road
+                g2d.setStroke(new BasicStroke(44, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                 g2d.draw(path);
             }
-            
-            // Draw towers
-            g.setColor(new Color(200, 150, 0));
-            for (Tower tower : game.getTowers()) {
-                g.fillOval(tower.getX() - 15, tower.getY() - 15, 30, 30);
-                g.setColor(new Color(255, 200, 0));
-                g.drawOval(tower.getX() - 15, tower.getY() - 15, 30, 30);
-                g.setColor(new Color(255, 200, 0));
-                g.drawString("M", tower.getX() - 3, tower.getY() + 5);
-                g.setColor(new Color(200, 150, 0));
+
+            // Draw balloons (smaller, full-diameter hitbox)
+            for (Balloon b : game.getBalloons()) {
+                g.setColor(new Color(255, 100, 100));
+                g.fillOval(b.getX() - BALLOON_RADIUS, b.getY() - BALLOON_RADIUS, BALLOON_RADIUS * 2, BALLOON_RADIUS * 2);
+                g.setColor(new Color(180, 40, 40));
+                g.drawOval(b.getX() - BALLOON_RADIUS, b.getY() - BALLOON_RADIUS, BALLOON_RADIUS * 2, BALLOON_RADIUS * 2);
             }
-            
+
+            // Draw towers (use sprites)
+            for (Tower tower : game.getTowers()) {
+                java.awt.image.BufferedImage sprite = tower.type == TowerType.NINJA ? ninjaSprite : normalSprite;
+                int w = sprite.getWidth();
+                int h = sprite.getHeight();
+                g2d.drawImage(sprite, tower.getX() - w/2, tower.getY() - h/2, null);
+
+                // If selected, draw range circle
+                if (tower.selected) {
+                    g2d.setColor(new Color(0, 150, 255, 40));
+                    g2d.fillOval(tower.getX() - tower.range, tower.getY() - tower.range, tower.range * 2, tower.range * 2);
+                    g2d.setColor(new Color(0, 150, 255, 140));
+                    g2d.setStroke(new BasicStroke(2));
+                    g2d.drawOval(tower.getX() - tower.range, tower.getY() - tower.range, tower.range * 2, tower.range * 2);
+                }
+            }
+
+            // Draw shurikens (animated)
+            for (Shuriken s : shurikens) {
+                g2d.setColor(new Color(230, 230, 230));
+                g2d.fillOval((int)s.x - 3, (int)s.y - 3, 6, 6);
+                // simple rotating cross
+                g2d.setStroke(new BasicStroke(2));
+                g2d.drawLine((int)s.x - 6, (int)s.y, (int)s.x + 6, (int)s.y);
+                g2d.drawLine((int)s.x, (int)s.y - 6, (int)s.x, (int)s.y + 6);
+            }
+
+            // Draw pebbles (normal tower projectiles)
+            for (Pebble p : pebbles) {
+                g2d.setColor(new Color(230, 180, 80));
+                g2d.fillOval((int)p.x - 4, (int)p.y - 4, 8, 8);
+            }
+
+            // Draw effects (explosion puffs)
+            g.setColor(new Color(240, 240, 240));
+            for (Effect effect : effects) {
+                int alpha = Math.max(20, effect.ttl * 20);
+                g.setColor(new Color(240, 240, 240, alpha));
+                g.fillOval(effect.x1 - effect.ttl, effect.y1 - effect.ttl, effect.ttl * 2, effect.ttl * 2);
+            }
+
             // Draw instruction text
-            g.setColor(new Color(200, 200, 200));
+            g.setColor(new Color(220, 220, 220));
             g.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-            g.drawString("Click to place Monkey ($1000)", 10, getHeight() - 10);
+            g.drawString("Selected: " + game.selectedTowerType.name() + " ($" + getCostFor(game.selectedTowerType) + ") | Click to place Monkey", 10, getHeight() - 10);
+        }
+
+        private static class Effect {
+            int x1, y1, x2, y2, ttl;
+
+            Effect(int x1, int y1, int x2, int y2, int ttl) {
+                this.x1 = x1;
+                this.y1 = y1;
+                this.x2 = x2;
+                this.y2 = y2;
+                this.ttl = ttl;
+            }
         }
     }
 
@@ -231,13 +511,47 @@ public final class BTD5Game implements Game {
         }
     }
 
+    // Return true if point lies on the drawn road (approx by stroking curve)
+    public boolean isPointOnRoad(int x, int y) {
+        if (gamePath == null || gamePath.getPoints().size() < 2) return false;
+        List<int[]> points = gamePath.getPoints();
+        Path2D path = new Path2D.Double();
+        path.moveTo(points.get(0)[0], points.get(0)[1]);
+        for (int i = 1; i < points.size(); i++) {
+            int[] p0 = points.get(i - 1);
+            int[] p1 = points.get(i);
+            if (i < points.size() - 1) {
+                int[] p2 = points.get(i + 1);
+                int cpx = p1[0];
+                int cpy = p1[1];
+                int endx = (p1[0] + p2[0]) / 2;
+                int endy = (p1[1] + p2[1]) / 2;
+                path.quadTo(cpx, cpy, endx, endy);
+            } else {
+                path.lineTo(p1[0], p1[1]);
+            }
+        }
+        java.awt.Stroke stroke = new BasicStroke(44, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
+        java.awt.Shape road = stroke.createStrokedShape(path);
+        return road.contains(x, y);
+    }
+
     private static class Tower {
         private int x;
         private int y;
+        private TowerType type;
+        // simple cooldown so ninjas don't spam
+        private int cooldown = 0;
+        // selected state for showing range
+        private boolean selected = false;
+        // range in pixels
+        private int range;
 
-        Tower(int x, int y) {
+        Tower(int x, int y, TowerType type) {
             this.x = x;
             this.y = y;
+            this.type = type;
+            this.range = (type == TowerType.NINJA) ? 120 : 80;
         }
 
         public int getX() {
@@ -249,11 +563,98 @@ public final class BTD5Game implements Game {
         }
     }
 
+    // Helper to create simple programmatic sprites
+    private static java.awt.image.BufferedImage createSprite(TowerType type, int size) {
+        java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(size, size, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = img.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        if (type == TowerType.NORMAL) {
+            g.setColor(new Color(200, 150, 0));
+            g.fillOval(2, 2, size-4, size-4);
+            g.setColor(new Color(255, 200, 0));
+            g.fillOval(size/4, size/4, size/2, size/2);
+            g.setColor(new Color(120, 80, 0));
+            g.drawString("M", size/2 - 4, size/2 + 4);
+        } else {
+            // ninja
+            g.setColor(new Color(60, 60, 80));
+            g.fillOval(2, 2, size-4, size-4);
+            g.setColor(new Color(20, 20, 20));
+            int eyeSize = 4;
+            g.fillRect(size/2 - 6, size/2 - 2, eyeSize, eyeSize);
+            g.fillRect(size/2 + 2, size/2 - 2, eyeSize, eyeSize);
+            g.setColor(new Color(200, 200, 200));
+            g.drawString("N", size/2 - 4, size/2 + 8);
+        }
+        g.dispose();
+        return img;
+    }
+
+    // Shuriken projectile - targets a balloon
+    private static class Shuriken {
+        double x, y;
+        Balloon target;
+        double vx, vy;
+        boolean alive = true;
+
+        Shuriken(double x, double y, Balloon target) {
+            this.x = x;
+            this.y = y;
+            this.target = target;
+            double dx = target.getX() - x;
+            double dy = target.getY() - y;
+            double len = Math.hypot(dx, dy);
+            if (len == 0) { vx = vy = 0; } else { vx = dx / len * 6; vy = dy / len * 6; }
+        }
+
+        void update() {
+            if (!alive) return;
+            x += vx; y += vy;
+            if (target == null) { alive = false; return; }
+            double dx = target.getX() - x;
+            double dy = target.getY() - y;
+            if (Math.hypot(dx, dy) < BALLOON_RADIUS + SHURIKEN_RADIUS) {
+                // hit (use full balloon radius)
+                alive = false;
+            }
+        }
+    }
+
+    // Pebble projectile used by normal monkeys
+    private static class Pebble {
+        double x, y;
+        Balloon target;
+        double vx, vy;
+        boolean alive = true;
+
+        Pebble(double x, double y, Balloon target) {
+            this.x = x;
+            this.y = y;
+            this.target = target;
+            double dx = target.getX() - x;
+            double dy = target.getY() - y;
+            double len = Math.hypot(dx, dy);
+            if (len == 0) { vx = vy = 0; } else { vx = dx / len * 5; vy = dy / len * 5; }
+        }
+
+        void update() {
+            if (!alive) return;
+            x += vx; y += vy;
+            if (target == null) { alive = false; return; }
+            double dx = target.getX() - x;
+            double dy = target.getY() - y;
+            if (Math.hypot(dx, dy) < BALLOON_RADIUS + PEBBLE_RADIUS) {
+                // hit (use full balloon radius)
+                alive = false;
+            }
+        }
+    }
+
     private static class Balloon {
-        private int x;
-        private int y;
-        private int pathIndex;
-        private double progress; // 0 to 1 along current segment
+        int x;
+        int y;
+        int pathIndex;
+        double progress; // 0 to 1 along current segment
 
         Balloon() {
             this.x = 0;
