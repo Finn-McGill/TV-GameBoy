@@ -179,16 +179,19 @@ public final class BTD5Game implements Game {
         // Game Canvas
         GameCanvas gameCanvas = new GameCanvas(this);
 
-        // Selection panel for monkey types
+        // Selection panel for monkey types (smaller)
         JPanel selectPanel = new JPanel();
         selectPanel.setBackground(new Color(30, 30, 30));
-        selectPanel.setBorder(javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12));
-        JButton normalButton = new JButton("Normal ($" + COST_NORMAL + ")");
-        JButton ninjaButton = new JButton("Ninja ($" + COST_NINJA + ")");
+        selectPanel.setBorder(javax.swing.BorderFactory.createEmptyBorder(8, 8, 8, 8));
+        selectPanel.setPreferredSize(new java.awt.Dimension(120, 0));
+        JButton normalButton = new JButton("Normal\n($" + COST_NORMAL + ")");
+        JButton ninjaButton = new JButton("Ninja\n($" + COST_NINJA + ")");
         normalButton.setToolTipText(getDescriptionFor(TowerType.NORMAL));
         ninjaButton.setToolTipText(getDescriptionFor(TowerType.NINJA));
         normalButton.setFocusPainted(false);
         ninjaButton.setFocusPainted(false);
+        normalButton.setPreferredSize(new java.awt.Dimension(100, 28));
+        ninjaButton.setPreferredSize(new java.awt.Dimension(100, 28));
         normalButton.addActionListener(e -> {
             selectedTowerType = TowerType.NORMAL;
             normalButton.setBackground(new Color(0, 150, 150));
@@ -201,6 +204,26 @@ public final class BTD5Game implements Game {
         });
         normalButton.setBackground(new Color(0, 150, 150)); // default selected
         selectPanel.add(new JLabel("Select Monkey:"));
+        normalButton.setOpaque(true);
+        normalButton.setBackground(new Color(40, 40, 40));
+        normalButton.setForeground(new Color(255,255,255));
+        normalButton.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        normalButton.setMargin(new java.awt.Insets(8, 12, 8, 12));
+        normalButton.setBorder(javax.swing.BorderFactory.createCompoundBorder(
+                javax.swing.BorderFactory.createLineBorder(new Color(100,100,100)),
+                javax.swing.BorderFactory.createEmptyBorder(6, 8, 6, 8)
+        ));
+
+        ninjaButton.setOpaque(true);
+        ninjaButton.setBackground(new Color(40, 40, 40));
+        ninjaButton.setForeground(new Color(255,255,255));
+        ninjaButton.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        ninjaButton.setMargin(new java.awt.Insets(8, 12, 8, 12));
+        ninjaButton.setBorder(javax.swing.BorderFactory.createCompoundBorder(
+                javax.swing.BorderFactory.createLineBorder(new Color(100,100,100)),
+                javax.swing.BorderFactory.createEmptyBorder(6, 8, 6, 8)
+        ));
+
         selectPanel.add(normalButton);
         selectPanel.add(ninjaButton);
 
@@ -248,6 +271,11 @@ public final class BTD5Game implements Game {
         private java.awt.image.BufferedImage normalSprite;
         private java.awt.image.BufferedImage ninjaSprite;
 
+        // viewport transform (world -> screen)
+        private double viewScale = 1.0;
+        private double viewOffsetX = 0.0;
+        private double viewOffsetY = 0.0;
+
         GameCanvas(BTD5Game game) {
             this.game = game;
             setBackground(new Color(20, 20, 20));
@@ -256,12 +284,16 @@ public final class BTD5Game implements Game {
             addMouseListener(new MouseAdapter() {
                 @Override
                 public void mouseClicked(MouseEvent e) {
-                    int mx = e.getX();
-                    int my = e.getY();
+                    // convert screen to world coordinates
+                    int sx = e.getX();
+                    int sy = e.getY();
+                    int wx = (int) ((sx - viewOffsetX) / viewScale);
+                    int wy = (int) ((sy - viewOffsetY) / viewScale);
+
                     // If clicking an existing tower -> select it and show range
                     for (Tower t : game.getTowers()) {
-                        double dx = t.getX() - mx;
-                        double dy = t.getY() - my;
+                        double dx = t.getX() - wx;
+                        double dy = t.getY() - wy;
                         if (Math.hypot(dx, dy) <= 16) {
                             for (Tower ot : game.getTowers()) ot.selected = false;
                             t.selected = true;
@@ -271,7 +303,7 @@ public final class BTD5Game implements Game {
                     }
 
                     // Otherwise try to place a tower (but not on the road)
-                    if (game.isPointOnRoad(mx, my)) {
+                    if (game.isPointOnRoad(wx, wy)) {
                         if (game.infoLabel != null) {
                             String prev = game.infoLabel.getText();
                             game.infoLabel.setText("Cannot place on road");
@@ -283,7 +315,7 @@ public final class BTD5Game implements Game {
                         return;
                     }
 
-                    game.addTower(mx, my);
+                    game.addTower(wx, wy);
                     repaint();
                 }
             });
@@ -321,11 +353,63 @@ public final class BTD5Game implements Game {
                     b.y = (int) (p0[1] * (1 - t) + p1[1] * t);
                 }
             }
+
+            // Prevent balloons overlapping on the track by pushing trailing balloons back
+            if (!game.getBalloons().isEmpty()) {
+                List<Balloon> sorted = new ArrayList<>(game.getBalloons());
+                // sort by leading position along path (higher pathIndex+progress first)
+                sorted.sort((a, b) -> Double.compare(b.pathIndex + b.progress, a.pathIndex + a.progress));
+                double minDist = BALLOON_RADIUS * 2 + 1;
+                for (int i = 1; i < sorted.size(); i++) {
+                    Balloon lead = sorted.get(i - 1);
+                    Balloon trail = sorted.get(i);
+                    double dx = lead.x - trail.x;
+                    double dy = lead.y - trail.y;
+                    double dist = Math.hypot(dx, dy);
+                    int safety = 0;
+                    while (dist < minDist && safety < 10) {
+                        // push trailing balloon back along path slightly (smaller nudge for smoothness)
+                        trail.progress -= 0.03;
+                        if (trail.progress < 0) {
+                            if (trail.pathIndex > 0) {
+                                trail.pathIndex--;
+                                trail.progress = 0.85;
+                            } else {
+                                trail.progress = 0;
+                                break;
+                            }
+                        }
+                        int[] tp0 = points.get(trail.pathIndex);
+                        int[] tp1 = points.get(Math.min(trail.pathIndex + 1, points.size() - 1));
+                        double t2 = trail.progress;
+                        trail.x = (int) (tp0[0] * (1 - t2) + tp1[0] * t2);
+                        trail.y = (int) (tp0[1] * (1 - t2) + tp1[1] * t2);
+                        dx = lead.x - trail.x;
+                        dy = lead.y - trail.y;
+                        dist = Math.hypot(dx, dy);
+                        safety++;
+                    }
+                }
+            }
+
             for (Balloon b : toRemove) {
                 game.getBalloons().remove(b);
-                // decrement lives when balloon reaches end
-                game.lives = Math.max(0, game.lives - 1);
-                if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
+            }
+
+            // Process balloons that reached the end with a small visible delay
+            for (Balloon b : new ArrayList<>(game.getBalloons())) {
+                if (b.pathIndex >= points.size() - 1) {
+                    if (!b.reachedEnd) {
+                        b.reachedEnd = true;
+                        b.endTimer = 6; // visible for ~6 ticks
+                        game.lives = Math.max(0, game.lives - 1);
+                        if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
+                    }
+                    b.endTimer--;
+                    if (b.endTimer <= 0) {
+                        game.getBalloons().remove(b);
+                    }
+                }
             }
             // Towers attack: ninjas spawn shurikens, normals spawn pebbles
             for (Tower t : game.getTowers()) {
@@ -402,44 +486,76 @@ public final class BTD5Game implements Game {
             Graphics2D g2d = (Graphics2D) g;
             g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-            // Draw path with smooth curves
+// Draw path as a jagged polyline, but first compute and apply fit-to-view transform
             if (game.gamePath != null && game.gamePath.getPoints().size() > 1) {
                 List<int[]> points = game.gamePath.getPoints();
 
-                // Create smooth path using quadratic Bezier curves
+                // compute world bounds
+                int minX = Integer.MAX_VALUE, minY = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE, maxY = Integer.MIN_VALUE;
+                for (int[] p : points) {
+                    minX = Math.min(minX, p[0]); minY = Math.min(minY, p[1]);
+                    maxX = Math.max(maxX, p[0]); maxY = Math.max(maxY, p[1]);
+                }
+                double pathW = Math.max(1, maxX - minX);
+                double pathH = Math.max(1, maxY - minY);
+                double availW = getWidth() - 80; // margins
+                double availH = getHeight() - 80;
+                viewScale = Math.min(availW / pathW, availH / pathH);
+                viewScale = Math.min(viewScale, 1.0); // don't scale up too much
+                viewOffsetX = (getWidth() - pathW * viewScale) / 2.0 - minX * viewScale;
+                viewOffsetY = (getHeight() - pathH * viewScale) / 2.0 - minY * viewScale;
+
+                // apply transform
+                java.awt.geom.AffineTransform old = g2d.getTransform();
+                g2d.translate(viewOffsetX, viewOffsetY);
+                g2d.scale(viewScale, viewScale);
+
                 Path2D path = new Path2D.Double();
                 path.moveTo(points.get(0)[0], points.get(0)[1]);
-
                 for (int i = 1; i < points.size(); i++) {
-                    int[] p0 = points.get(i - 1);
                     int[] p1 = points.get(i);
-
-                    if (i < points.size() - 1) {
-                        int[] p2 = points.get(i + 1);
-                        int cpx = p1[0];
-                        int cpy = p1[1];
-                        int endx = (p1[0] + p2[0]) / 2;
-                        int endy = (p1[1] + p2[1]) / 2;
-                        path.quadTo(cpx, cpy, endx, endy);
-                    } else {
-                        path.lineTo(p1[0], p1[1]);
-                    }
+                    path.lineTo(p1[0], p1[1]);
                 }
 
                 g2d.setColor(new Color(220, 180, 110)); // brighter, higher-contrast road
-                g2d.setStroke(new BasicStroke(44, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                // keep stroke independent of zoom by dividing by scale
+                float strokeWidth = (float)(44.0 / Math.max(0.0001, viewScale));
+                g2d.setStroke(new BasicStroke(strokeWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                 g2d.draw(path);
-            }
 
-            // Draw balloons (smaller, full-diameter hitbox)
+                // Draw "End of track" sign near the final point (in world coords)
+                int[] endPoint = points.get(points.size() - 1);
+                int signX = endPoint[0] + 12;
+                int signY = endPoint[1] - 34;
+                // post
+                g2d.setColor(new Color(100, 60, 20));
+                g2d.fillRect(signX - 6, signY + 18, 4, 20);
+                // sign board
+                g2d.setColor(new Color(240, 240, 240));
+                g2d.fillRect(signX, signY, 80, 20);
+                g2d.setColor(new Color(20, 20, 20));
+                g2d.setFont(new Font("Segoe UI", Font.BOLD, 12));
+                g2d.drawString("End of track", signX + 6, signY + 14);
+
+                // restore transform so other screen elements (like HUD) draw normally
+                g2d.setTransform(old);
+                }
+
+            // Draw balloons (smaller, solid red fill) in world space so they match the path
+            java.awt.geom.AffineTransform oldBalloonTransform = g2d.getTransform();
+            g2d.translate(viewOffsetX, viewOffsetY);
+            g2d.scale(viewScale, viewScale);
+            g2d.setColor(new Color(200, 20, 20));
             for (Balloon b : game.getBalloons()) {
-                g.setColor(new Color(255, 100, 100));
-                g.fillOval(b.getX() - BALLOON_RADIUS, b.getY() - BALLOON_RADIUS, BALLOON_RADIUS * 2, BALLOON_RADIUS * 2);
-                g.setColor(new Color(180, 40, 40));
-                g.drawOval(b.getX() - BALLOON_RADIUS, b.getY() - BALLOON_RADIUS, BALLOON_RADIUS * 2, BALLOON_RADIUS * 2);
+                g2d.fillOval(b.getX() - BALLOON_RADIUS, b.getY() - BALLOON_RADIUS, BALLOON_RADIUS * 2, BALLOON_RADIUS * 2);
             }
+            g2d.setTransform(oldBalloonTransform);
 
-            // Draw towers (use sprites)
+            // Draw towers (use sprites) within world transform
+            // apply world transform so towers and projectiles align to path
+            java.awt.geom.AffineTransform old = g2d.getTransform();
+            g2d.translate(viewOffsetX, viewOffsetY);
+            g2d.scale(viewScale, viewScale);
             for (Tower tower : game.getTowers()) {
                 java.awt.image.BufferedImage sprite = tower.type == TowerType.NINJA ? ninjaSprite : normalSprite;
                 int w = sprite.getWidth();
@@ -451,17 +567,22 @@ public final class BTD5Game implements Game {
                     g2d.setColor(new Color(0, 150, 255, 40));
                     g2d.fillOval(tower.getX() - tower.range, tower.getY() - tower.range, tower.range * 2, tower.range * 2);
                     g2d.setColor(new Color(0, 150, 255, 140));
-                    g2d.setStroke(new BasicStroke(2));
+                    g2d.setStroke(new BasicStroke((float)(2.0 / Math.max(0.0001, viewScale))));
                     g2d.drawOval(tower.getX() - tower.range, tower.getY() - tower.range, tower.range * 2, tower.range * 2);
                 }
             }
+            g2d.setTransform(old);
 
-            // Draw shurikens (animated)
+            // Draw shurikens (animated) and pebbles using world transform
+            java.awt.geom.AffineTransform old2 = g2d.getTransform();
+            g2d.translate(viewOffsetX, viewOffsetY);
+            g2d.scale(viewScale, viewScale);
+
             for (Shuriken s : shurikens) {
                 g2d.setColor(new Color(230, 230, 230));
-                g2d.fillOval((int)s.x - 3, (int)s.y - 3, 6, 6);
-                // simple rotating cross
-                g2d.setStroke(new BasicStroke(2));
+                g2d.fillOval((int)s.x - SHURIKEN_RADIUS, (int)s.y - SHURIKEN_RADIUS, SHURIKEN_RADIUS * 2, SHURIKEN_RADIUS * 2);
+                // simple rotating cross (scaled stroke)
+                g2d.setStroke(new BasicStroke((float)(2.0 / Math.max(0.0001, viewScale))));
                 g2d.drawLine((int)s.x - 6, (int)s.y, (int)s.x + 6, (int)s.y);
                 g2d.drawLine((int)s.x, (int)s.y - 6, (int)s.x, (int)s.y + 6);
             }
@@ -469,8 +590,10 @@ public final class BTD5Game implements Game {
             // Draw pebbles (normal tower projectiles)
             for (Pebble p : pebbles) {
                 g2d.setColor(new Color(230, 180, 80));
-                g2d.fillOval((int)p.x - 4, (int)p.y - 4, 8, 8);
+                g2d.fillOval((int)p.x - PEBBLE_RADIUS, (int)p.y - PEBBLE_RADIUS, PEBBLE_RADIUS * 2, PEBBLE_RADIUS * 2);
             }
+
+            g2d.setTransform(old2);
 
             // Draw effects (explosion puffs)
             g.setColor(new Color(240, 240, 240));
@@ -655,12 +778,16 @@ public final class BTD5Game implements Game {
         int y;
         int pathIndex;
         double progress; // 0 to 1 along current segment
+        boolean reachedEnd = false;
+        int endTimer = 0;
 
         Balloon() {
             this.x = 0;
             this.y = 150;
             this.pathIndex = 0;
             this.progress = 0;
+            this.reachedEnd = false;
+            this.endTimer = 0;
         }
 
         public int getX() {
