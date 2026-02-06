@@ -53,42 +53,31 @@ public final class BTD5Game implements Game {
     }
 
     // Visual / gameplay constants
-    private static final int BALLOON_RADIUS = 6; // smaller balloons
-    private static final int SHURIKEN_RADIUS = 3;
-    private static final int PEBBLE_RADIUS = 4;
+    private static final int BALLOON_RADIUS = 10; // larger balloons
+    private static final int SHURIKEN_RADIUS = 4;
+    private static final int PEBBLE_RADIUS = 5;
     private static final int MONEY_PER_POP = 50; // reward per popped balloon
 
 
     @Override
     public JComponent getView(Runnable returnToMenu) {
-        // Create game path with loops and curves
+        // Create game path with 2 turns - uniform segment lengths for constant speed
         gamePath = new GamePath();
-        // Right side climb
+        // Start going right with uniform segments
         gamePath.addPoint(20, 200);
-        gamePath.addPoint(80, 180);
-        gamePath.addPoint(140, 120);
-        gamePath.addPoint(180, 80);
-        // First loop up
-        gamePath.addPoint(220, 60);
-        gamePath.addPoint(260, 50);
-        gamePath.addPoint(300, 60);
-        gamePath.addPoint(320, 100);
-        // Down and across
-        gamePath.addPoint(340, 150);
-        gamePath.addPoint(380, 200);
-        gamePath.addPoint(420, 220);
-        // Second loop down
-        gamePath.addPoint(460, 230);
-        gamePath.addPoint(500, 240);
-        gamePath.addPoint(540, 230);
-        gamePath.addPoint(560, 190);
-        // Final stretch
-        gamePath.addPoint(580, 140);
-        gamePath.addPoint(620, 100);
-        gamePath.addPoint(660, 80);
-        gamePath.addPoint(700, 100);
-        gamePath.addPoint(740, 150);
-        gamePath.addPoint(780, 200);
+        gamePath.addPoint(100, 200);
+        gamePath.addPoint(180, 200);
+        gamePath.addPoint(260, 200);
+        gamePath.addPoint(340, 200);
+        gamePath.addPoint(420, 200);
+        gamePath.addPoint(500, 200);
+        // First turn: go down with uniform segments
+        gamePath.addPoint(520, 270);
+        gamePath.addPoint(520, 340);
+        // Second turn: go right
+        gamePath.addPoint(600, 340);
+        gamePath.addPoint(680, 340);
+        gamePath.addPoint(760, 340);
 
 
 
@@ -265,7 +254,7 @@ public final class BTD5Game implements Game {
     private static class GameCanvas extends JPanel {
         private BTD5Game game;
         private javax.swing.Timer timer;
-        private List<Effect> effects = new ArrayList<>();
+        private List<Particle> effects = new ArrayList<>();
         private List<Shuriken> shurikens = new ArrayList<>();
         private List<Pebble> pebbles = new ArrayList<>();
         private java.awt.image.BufferedImage normalSprite;
@@ -289,6 +278,22 @@ public final class BTD5Game implements Game {
                     int sy = e.getY();
                     int wx = (int) ((sx - viewOffsetX) / viewScale);
                     int wy = (int) ((sy - viewOffsetY) / viewScale);
+
+                    // Check if clicking sell button on selected tower
+                    for (Tower t : game.getTowers()) {
+                        if (t.selected) {
+                            int btnX = (int) (t.getX() * viewScale + viewOffsetX) - 40;
+                            int btnY = (int) (t.getY() * viewScale + viewOffsetY) + 30;
+                            if (sx >= btnX && sx <= btnX + 80 && sy >= btnY && sy <= btnY + 24) {
+                                // Sell the tower
+                                game.money += getCostFor(t.type) / 2;
+                                if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
+                                game.getTowers().remove(t);
+                                repaint();
+                                return;
+                            }
+                        }
+                    }
 
                     // If clicking an existing tower -> select it and show range
                     for (Tower t : game.getTowers()) {
@@ -343,7 +348,7 @@ public final class BTD5Game implements Game {
                 } else {
                     int[] p0 = points.get(b.pathIndex);
                     int[] p1 = points.get(b.pathIndex + 1);
-                    b.progress += 0.02;
+                    b.progress += 0.03;
                     if (b.progress >= 1.0) {
                         b.progress = 0;
                         b.pathIndex++;
@@ -354,29 +359,26 @@ public final class BTD5Game implements Game {
                 }
             }
 
-            // Prevent balloons overlapping on the track by pushing trailing balloons back
+            // Prevent balloons overlapping on the track by pushing trailing balloons back (optimized)
             if (!game.getBalloons().isEmpty()) {
                 List<Balloon> sorted = new ArrayList<>(game.getBalloons());
-                // sort by leading position along path (higher pathIndex+progress first)
                 sorted.sort((a, b) -> Double.compare(b.pathIndex + b.progress, a.pathIndex + a.progress));
-                double minDist = BALLOON_RADIUS * 2 + 1;
+                double minDist = BALLOON_RADIUS * 2.5;
                 for (int i = 1; i < sorted.size(); i++) {
                     Balloon lead = sorted.get(i - 1);
                     Balloon trail = sorted.get(i);
                     double dx = lead.x - trail.x;
                     double dy = lead.y - trail.y;
                     double dist = Math.hypot(dx, dy);
-                    int safety = 0;
-                    while (dist < minDist && safety < 10) {
-                        // push trailing balloon back along path slightly (smaller nudge for smoothness)
-                        trail.progress -= 0.03;
+                    if (dist < minDist) {
+                        // Gently push back (once, no loop) to avoid lag
+                        trail.progress -= 0.015;
                         if (trail.progress < 0) {
                             if (trail.pathIndex > 0) {
                                 trail.pathIndex--;
                                 trail.progress = 0.85;
                             } else {
                                 trail.progress = 0;
-                                break;
                             }
                         }
                         int[] tp0 = points.get(trail.pathIndex);
@@ -384,10 +386,6 @@ public final class BTD5Game implements Game {
                         double t2 = trail.progress;
                         trail.x = (int) (tp0[0] * (1 - t2) + tp1[0] * t2);
                         trail.y = (int) (tp0[1] * (1 - t2) + tp1[1] * t2);
-                        dx = lead.x - trail.x;
-                        dy = lead.y - trail.y;
-                        dist = Math.hypot(dx, dy);
-                        safety++;
                     }
                 }
             }
@@ -447,7 +445,13 @@ public final class BTD5Game implements Game {
                 if (!s.alive) {
                     deadS.add(s);
                     if (s.target != null) popped.add(s.target);
-                    effects.add(new Effect((int)s.x, (int)s.y, (int)s.x, (int)s.y, 8));
+                    // Create impact particles
+                    for (int i = 0; i < 4; i++) {
+                        double angle = (i / 4.0) * Math.PI * 2;
+                        double vx = Math.cos(angle) * 2.0;
+                        double vy = Math.sin(angle) * 2.0;
+                        effects.add(new Particle(s.x, s.y, vx, vy, 8));
+                    }
                 }
             }
             shurikens.removeAll(deadS);
@@ -459,7 +463,13 @@ public final class BTD5Game implements Game {
                 if (!p.alive) {
                     deadP.add(p);
                     if (p.target != null) popped.add(p.target);
-                    effects.add(new Effect((int)p.x, (int)p.y, (int)p.x, (int)p.y, 6));
+                    // Create impact particles
+                    for (int i = 0; i < 4; i++) {
+                        double angle = (i / 4.0) * Math.PI * 2;
+                        double vx = Math.cos(angle) * 2.0;
+                        double vy = Math.sin(angle) * 2.0;
+                        effects.add(new Particle(p.x, p.y, vx, vy, 6));
+                    }
                 }
             }
             pebbles.removeAll(deadP);
@@ -470,10 +480,25 @@ public final class BTD5Game implements Game {
                 int count = unique.size();
                 game.money += count * MONEY_PER_POP;
                 if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
-                for (Balloon b : unique) game.getBalloons().remove(b);
+                // Create pop effects at balloon positions before removal
+                for (Balloon b : unique) {
+                    int bx = b.getX();
+                    int by = b.getY();
+                    // Spawn multiple particles radiating outward
+                    for (int i = 0; i < 8; i++) {
+                        double angle = (i / 8.0) * Math.PI * 2;
+                        double vx = Math.cos(angle) * 3.5;
+                        double vy = Math.sin(angle) * 3.5;
+                        effects.add(new Particle(bx, by, vx, vy, 12));
+                    }
+                    game.getBalloons().remove(b);
+                }
             }
 
-            // decay effects
+            // Update and decay effects
+            for (Particle p : new ArrayList<>(effects)) {
+                p.update();
+            }
             effects.removeIf(effect -> --effect.ttl <= 0);
 
             // update active projectiles count so round thread can wait for them
@@ -587,26 +612,58 @@ public final class BTD5Game implements Game {
                 g2d.drawLine((int)s.x, (int)s.y - 6, (int)s.x, (int)s.y + 6);
             }
 
-            // Draw pebbles (normal tower projectiles)
+            // Draw pebbles (normal tower projectiles) - brown color
             for (Pebble p : pebbles) {
-                g2d.setColor(new Color(230, 180, 80));
+                g2d.setColor(new Color(139, 69, 19));
                 g2d.fillOval((int)p.x - PEBBLE_RADIUS, (int)p.y - PEBBLE_RADIUS, PEBBLE_RADIUS * 2, PEBBLE_RADIUS * 2);
             }
 
-            g2d.setTransform(old2);
-
-            // Draw effects (explosion puffs)
-            g.setColor(new Color(240, 240, 240));
-            for (Effect effect : effects) {
-                int alpha = Math.max(20, effect.ttl * 20);
-                g.setColor(new Color(240, 240, 240, alpha));
-                g.fillOval(effect.x1 - effect.ttl, effect.y1 - effect.ttl, effect.ttl * 2, effect.ttl * 2);
+            // Draw effects (explosion particles) in world space
+            for (Particle effect : effects) {
+                int alpha = Math.max(30, effect.ttl * 20);
+                g2d.setColor(new Color(255, 200, 100, alpha));
+                g2d.fillOval((int)effect.x - 4, (int)effect.y - 4, 8, 8);
             }
+            g2d.setTransform(old2);
 
             // Draw instruction text
             g.setColor(new Color(220, 220, 220));
             g.setFont(new Font("Segoe UI", Font.PLAIN, 12));
             g.drawString("Selected: " + game.selectedTowerType.name() + " ($" + getCostFor(game.selectedTowerType) + ") | Click to place Monkey", 10, getHeight() - 10);
+
+            // Draw sell button if a tower is selected
+            for (Tower tower : game.getTowers()) {
+                if (tower.selected) {
+                    int btnX = (int) (tower.getX() * viewScale + viewOffsetX) - 40;
+                    int btnY = (int) (tower.getY() * viewScale + viewOffsetY) + 30;
+                    g.setColor(new Color(200, 0, 0));
+                    g.fillRect(btnX, btnY, 80, 24);
+                    g.setColor(new Color(255, 255, 255));
+                    g.setFont(new Font("Segoe UI", Font.BOLD, 11));
+                    g.drawString("Sell ($" + (getCostFor(tower.type) / 2) + ")", btnX + 6, btnY + 16);
+                    break;
+                }
+            }
+        }
+
+        private static class Particle {
+            double x, y, vx, vy;
+            int ttl;
+
+            Particle(double x, double y, double vx, double vy, int ttl) {
+                this.x = x;
+                this.y = y;
+                this.vx = vx;
+                this.vy = vy;
+                this.ttl = ttl;
+            }
+
+            void update() {
+                x += vx;
+                y += vy;
+                vx *= 0.95; // friction
+                vy *= 0.95;
+            }
         }
 
         private static class Effect {
@@ -727,7 +784,7 @@ public final class BTD5Game implements Game {
             double dx = target.getX() - x;
             double dy = target.getY() - y;
             double len = Math.hypot(dx, dy);
-            if (len == 0) { vx = vy = 0; } else { vx = dx / len * 6; vy = dy / len * 6; }
+            if (len == 0) { vx = vy = 0; } else { vx = dx / len * 10; vy = dy / len * 10; }
         }
 
         void update() {
@@ -736,8 +793,8 @@ public final class BTD5Game implements Game {
             if (target == null) { alive = false; return; }
             double dx = target.getX() - x;
             double dy = target.getY() - y;
-            if (Math.hypot(dx, dy) < BALLOON_RADIUS + SHURIKEN_RADIUS) {
-                // hit (use full balloon radius)
+            if (Math.hypot(dx, dy) < BALLOON_RADIUS + SHURIKEN_RADIUS + 15) {
+                // hit (very forgiving collision to prevent misses)
                 alive = false;
             }
         }
@@ -757,7 +814,7 @@ public final class BTD5Game implements Game {
             double dx = target.getX() - x;
             double dy = target.getY() - y;
             double len = Math.hypot(dx, dy);
-            if (len == 0) { vx = vy = 0; } else { vx = dx / len * 5; vy = dy / len * 5; }
+            if (len == 0) { vx = vy = 0; } else { vx = dx / len * 9; vy = dy / len * 9; }
         }
 
         void update() {
@@ -766,8 +823,8 @@ public final class BTD5Game implements Game {
             if (target == null) { alive = false; return; }
             double dx = target.getX() - x;
             double dy = target.getY() - y;
-            if (Math.hypot(dx, dy) < BALLOON_RADIUS + PEBBLE_RADIUS) {
-                // hit (use full balloon radius)
+            if (Math.hypot(dx, dy) < BALLOON_RADIUS + PEBBLE_RADIUS + 15) {
+                // hit (very forgiving collision to prevent misses)
                 alive = false;
             }
         }
