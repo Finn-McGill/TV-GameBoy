@@ -10,6 +10,7 @@ import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.Path2D;
+import java.awt.geom.Ellipse2D;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -326,7 +327,25 @@ public final class BTD5Game implements Game {
             });
 
             // Generate simple sprites programmatically so we don't need external files
-            normalSprite = createSprite(TowerType.NORMAL, 30);
+            // But prefer an embedded photo resource for the normal monkey if available
+            java.awt.image.BufferedImage loadedNormal = null;
+            try {
+                java.io.InputStream is = BTD5Game.class.getResourceAsStream("/monkey_normal.png");
+                if (is != null) {
+                    loadedNormal = javax.imageio.ImageIO.read(is);
+                }
+            } catch (Exception ex) {
+                // ignore - fallback to generated sprite
+            }
+            if (loadedNormal != null) {
+                normalSprite = new java.awt.image.BufferedImage(30, 30, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+                java.awt.Graphics2D g2 = normalSprite.createGraphics();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.drawImage(loadedNormal, 0, 0, 30, 30, null);
+                g2.dispose();
+            } else {
+                normalSprite = createSprite(TowerType.NORMAL, 30);
+            }
             ninjaSprite = createSprite(TowerType.NINJA, 30);
 
             timer = new javax.swing.Timer(40, ev -> {
@@ -356,6 +375,9 @@ public final class BTD5Game implements Game {
                     double t = b.progress;
                     b.x = (int) (p0[0] * (1 - t) + p1[0] * t);
                     b.y = (int) (p0[1] * (1 - t) + p1[1] * t);
+                    // Smooth display position to avoid visual jitter on turns or nudges
+                    b.displayX += (b.x - b.displayX) * 0.45;
+                    b.displayY += (b.y - b.displayY) * 0.45;
                 }
             }
 
@@ -572,7 +594,9 @@ public final class BTD5Game implements Game {
             g2d.scale(viewScale, viewScale);
             g2d.setColor(new Color(200, 20, 20));
             for (Balloon b : game.getBalloons()) {
-                g2d.fillOval(b.getX() - BALLOON_RADIUS, b.getY() - BALLOON_RADIUS, BALLOON_RADIUS * 2, BALLOON_RADIUS * 2);
+                // draw using interpolated display positions (double precision) for smooth motion
+                Ellipse2D.Double ell = new Ellipse2D.Double(b.displayX - BALLOON_RADIUS, b.displayY - BALLOON_RADIUS, BALLOON_RADIUS * 2, BALLOON_RADIUS * 2);
+                g2d.fill(ell);
             }
             g2d.setTransform(oldBalloonTransform);
 
@@ -833,6 +857,9 @@ public final class BTD5Game implements Game {
     private static class Balloon {
         int x;
         int y;
+        // display coordinates used for smooth rendering (interpolated)
+        double displayX;
+        double displayY;
         int pathIndex;
         double progress; // 0 to 1 along current segment
         boolean reachedEnd = false;
@@ -845,6 +872,8 @@ public final class BTD5Game implements Game {
             this.progress = 0;
             this.reachedEnd = false;
             this.endTimer = 0;
+            this.displayX = this.x;
+            this.displayY = this.y;
         }
 
         public int getX() {
