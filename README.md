@@ -4,7 +4,7 @@ Template launcher for student-made games. The launcher shows a menu of games and
 
 ## Quick start
 - Install Java 17 and Gradle.
-- Run: `gradle :launcher:run`
+- Run: `./gradlew :launcher:run`
 
 ## Project layout
 - `shared/` shared interfaces used by the launcher and games.

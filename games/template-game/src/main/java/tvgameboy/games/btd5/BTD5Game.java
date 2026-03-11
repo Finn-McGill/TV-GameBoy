@@ -6,11 +6,12 @@ import java.awt.Color;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
+import java.awt.GradientPaint;
+import java.awt.Polygon;
 import java.awt.RenderingHints;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.Path2D;
-import java.awt.geom.Ellipse2D;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -18,6 +19,8 @@ import javax.swing.JButton;
 import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
+import javax.swing.JToggleButton;
+import javax.swing.SwingUtilities;
 
 import tvgameboy.shared.Game;
 
@@ -28,6 +31,7 @@ public final class BTD5Game implements Game {
     private int lives = 20;
     private int round = 1;
     private boolean roundStarted = false;
+    private boolean autoStartRounds = true;
     private GamePath gamePath;
     // UI label to show money/lives/round
     private javax.swing.JLabel infoLabel;
@@ -39,6 +43,26 @@ public final class BTD5Game implements Game {
     private enum TowerType {
         NORMAL,
         NINJA
+    }
+
+    private enum BalloonType {
+        STARTER(1, 1.0, 50, new Color(255, 192, 220), new Color(214, 56, 126)),
+        SKY(2, 1.08, 65, new Color(168, 220, 255), new Color(52, 126, 214)),
+        LIME(3, 1.15, 85, new Color(206, 246, 136), new Color(84, 184, 58));
+
+        private final int health;
+        private final double speedMultiplier;
+        private final int reward;
+        private final Color topColor;
+        private final Color bottomColor;
+
+        BalloonType(int health, double speedMultiplier, int reward, Color topColor, Color bottomColor) {
+            this.health = health;
+            this.speedMultiplier = speedMultiplier;
+            this.reward = reward;
+            this.topColor = topColor;
+            this.bottomColor = bottomColor;
+        }
     }
 
     // Costs for tower types
@@ -54,31 +78,59 @@ public final class BTD5Game implements Game {
     }
 
     // Visual / gameplay constants
-    private static final int BALLOON_RADIUS = 10; // larger balloons
+    private static final int BALLOON_RADIUS = 14; // slightly smaller balloons
+    private static final double BASE_BALLOON_SPEED = 2.6; // pixels per tick along path
+    private static final double SPEED_PER_ROUND = 0.45;
+    private static final int BASE_BALLOONS_PER_ROUND = 8;
+    private static final int BALLOONS_PER_ROUND_INCREASE = 3;
+    private static final int BASE_SPAWN_DELAY_MS = 500;
+    private static final int SPAWN_DELAY_REDUCTION_PER_ROUND_MS = 55;
+    private static final int MIN_SPAWN_DELAY_MS = 80;
     private static final int SHURIKEN_RADIUS = 4;
     private static final int PEBBLE_RADIUS = 5;
-    private static final int MONEY_PER_POP = 50; // reward per popped balloon
+    private static final int UPGRADE_RANGE_COST = 800;
+    private static final int UPGRADE_SPEED_COST = 900;
+    private static final int UPGRADE_DAMAGE_COST = 1000;
+    private static final int UPGRADE_RANGE_AMOUNT = 30;
+    private static final int MIN_COOLDOWN_NINJA = 8;
+    private static final int MIN_COOLDOWN_NORMAL = 12;
+    private static final float ROAD_DRAW_WIDTH = 44f;
+    private static final float ROAD_BLOCK_WIDTH = 34f;
+    private static final double PATH_ARROW_SPACING = 195.0;
+    private static final double PATH_ARROW_LENGTH = 28.0;
+    private static final double PATH_ARROW_HEAD_LENGTH = 10.0;
+    private static final double PATH_ARROW_HEAD_WIDTH = 11.0;
+    private static final float PATH_ARROW_SHAFT_WIDTH = 4.0f;
+    private static final long PATH_ARROW_BLINK_STEP_MS = 260L;
+    private static final double PATH_ARROW_MIN_CENTER_DISTANCE = 95.0;
 
 
     @Override
     public JComponent getView(Runnable returnToMenu) {
-        // Create game path with 2 turns - uniform segment lengths for constant speed
+        // Create a more complex path that includes a full loop before exiting.
         gamePath = new GamePath();
-        // Start going right with uniform segments
+        // Start going right
         gamePath.addPoint(20, 200);
-        gamePath.addPoint(100, 200);
-        gamePath.addPoint(180, 200);
-        gamePath.addPoint(260, 200);
-        gamePath.addPoint(340, 200);
+        gamePath.addPoint(120, 200);
+        gamePath.addPoint(220, 200);
+        gamePath.addPoint(320, 200);
         gamePath.addPoint(420, 200);
-        gamePath.addPoint(500, 200);
-        // First turn: go down with uniform segments
-        gamePath.addPoint(520, 270);
-        gamePath.addPoint(520, 340);
-        // Second turn: go right
-        gamePath.addPoint(600, 340);
-        gamePath.addPoint(680, 340);
-        gamePath.addPoint(760, 340);
+        gamePath.addPoint(520, 200);
+
+        // Enter a wider loop from top-right, then travel clockwise.
+        gamePath.addPoint(520, 380);
+        gamePath.addPoint(260, 380);
+        gamePath.addPoint(260, 100);
+        gamePath.addPoint(700, 100);
+        gamePath.addPoint(700, 380);
+        gamePath.addPoint(260, 380); // loop closes here with larger spacing
+
+        // Exit loop and finish to the right with extra separation from the loop.
+        gamePath.addPoint(260, 520);
+        gamePath.addPoint(420, 520);
+        gamePath.addPoint(580, 520);
+        gamePath.addPoint(740, 520);
+        gamePath.addPoint(860, 520);
 
 
 
@@ -109,62 +161,30 @@ public final class BTD5Game implements Game {
         startRoundButton.setBackground(new Color(200, 0, 0));
         startRoundButton.setForeground(new Color(255, 255, 255));
         startRoundButton.setFocusPainted(false);
-        startRoundButton.addActionListener(event -> {
-            if (!roundStarted) {
-                roundStarted = true;
-                startRoundButton.setEnabled(false);
-                this.infoLabel.setText("Money: $" + money + " | Lives: " + lives + " | Round: " + round + " (RUNNING)");
-                // Spawn some balloons over time so towers can interact
-                new Thread(() -> {
-                    try {
-                        for (int i = 0; i < 8; i++) {
-                            Balloon b = new Balloon();
-                            // initialize at first point if available
-                            if (gamePath.getPoints().size() > 0) {
-                                int[] p = gamePath.getPoints().get(0);
-                                b.x = p[0];
-                                b.y = p[1];
-                            }
-                            // avoid overlapping: wait while a balloon is too close to start
-                            synchronized (balloons) {
-                                while (true) {
-                                    boolean tooClose = false;
-                                    for (Balloon ob : balloons) {
-                                        double dx = ob.x - b.x;
-                                        double dy = ob.y - b.y;
-                                        if (Math.hypot(dx, dy) < BALLOON_RADIUS * 4) { tooClose = true; break; }
-                                    }
-                                    if (!tooClose) break;
-                                    Thread.sleep(150);
-                                }
-                                balloons.add(b);
-                            }
-                            Thread.sleep(500);
-                        }
+        startRoundButton.addActionListener(event -> startRound(startRoundButton));
 
-                        // Wait until all balloons and active projectiles/effects are finished
-                        while (true) {
-                            synchronized (balloons) {
-                                if (balloons.isEmpty() && activeProjectiles == 0) break;
-                            }
-                            Thread.sleep(200);
-                        }
-
-                        roundStarted = false;
-                        round++;
-                        money += 500; // increased reward per round
-                        startRoundButton.setEnabled(true);
-                        this.infoLabel.setText("Money: $" + money + " | Lives: " + lives + " | Round: " + round);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                }).start();
+        JToggleButton autoRoundButton = new JToggleButton("Auto Rounds: ON");
+        autoRoundButton.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        autoRoundButton.setBackground(new Color(0, 120, 180));
+        autoRoundButton.setForeground(new Color(255, 255, 255));
+        autoRoundButton.setFocusPainted(false);
+        autoRoundButton.setSelected(true);
+        autoRoundButton.addActionListener(event -> {
+            autoStartRounds = autoRoundButton.isSelected();
+            autoRoundButton.setText(autoStartRounds ? "Auto Rounds: ON" : "Auto Rounds: OFF");
+            autoRoundButton.setBackground(autoStartRounds ? new Color(0, 120, 180) : new Color(55, 55, 55));
+            if (autoStartRounds && !roundStarted) {
+                startRound(startRoundButton);
             }
         });
 
         topBar.add(menuButton, BorderLayout.WEST);
         topBar.add(infoPanel, BorderLayout.CENTER);
-        topBar.add(startRoundButton, BorderLayout.EAST);
+        JPanel roundControls = new JPanel();
+        roundControls.setBackground(new Color(30, 30, 30));
+        roundControls.add(autoRoundButton);
+        roundControls.add(startRoundButton);
+        topBar.add(roundControls, BorderLayout.EAST);
 
         // Game Canvas
         GameCanvas gameCanvas = new GameCanvas(this);
@@ -220,6 +240,7 @@ public final class BTD5Game implements Game {
         mainPanel.add(topBar, BorderLayout.NORTH);
         mainPanel.add(selectPanel, BorderLayout.WEST);
         mainPanel.add(gameCanvas, BorderLayout.CENTER);
+        SwingUtilities.invokeLater(() -> startRound(startRoundButton));
         return mainPanel;
     }
 
@@ -252,12 +273,89 @@ public final class BTD5Game implements Game {
         this.money = amount;
     }
 
+    private void startRound(JButton startRoundButton) {
+        if (roundStarted || lives <= 0) {
+            return;
+        }
+        roundStarted = true;
+        startRoundButton.setEnabled(false);
+        if (infoLabel != null) {
+            infoLabel.setText("Money: $" + money + " | Lives: " + lives + " | Round: " + round + " (RUNNING)");
+        }
+
+        new Thread(() -> {
+            try {
+                int roundNumber = round;
+                int balloonsToSpawn = getBalloonCountForRound(roundNumber);
+                int batchSize = getSpawnBatchSizeForRound(roundNumber);
+                int spawnDelayMs = getSpawnDelayForRound(roundNumber);
+
+                for (int spawned = 0; spawned < balloonsToSpawn; ) {
+                    int inBatch = Math.min(batchSize, balloonsToSpawn - spawned);
+                    for (int j = 0; j < inBatch; j++) {
+                        Balloon b = new Balloon(getBalloonTypeForSpawn(roundNumber, spawned, balloonsToSpawn));
+                        if (gamePath.getPoints().size() > 0) {
+                            int[] p = gamePath.getPoints().get(0);
+                            b.x = p[0];
+                            b.y = p[1];
+                            b.displayX = b.x;
+                            b.displayY = b.y;
+                        }
+                        synchronized (balloons) {
+                            while (true) {
+                                boolean tooClose = false;
+                                for (Balloon ob : balloons) {
+                                    double dx = ob.x - b.x;
+                                    double dy = ob.y - b.y;
+                                    if (Math.hypot(dx, dy) < getStartSpawnSeparationForRound(roundNumber)) {
+                                        tooClose = true;
+                                        break;
+                                    }
+                                }
+                                if (!tooClose) break;
+                                Thread.sleep(40);
+                            }
+                            balloons.add(b);
+                        }
+                        spawned++;
+                    }
+                    Thread.sleep(spawnDelayMs);
+                }
+
+                while (true) {
+                    synchronized (balloons) {
+                        if (balloons.isEmpty() && activeProjectiles == 0) break;
+                    }
+                    Thread.sleep(200);
+                }
+
+                roundStarted = false;
+                round++;
+                money += 500;
+                SwingUtilities.invokeLater(() -> {
+                    startRoundButton.setEnabled(true);
+                    if (infoLabel != null) {
+                        infoLabel.setText("Money: $" + money + " | Lives: " + lives + " | Round: " + round);
+                    }
+                    if (autoStartRounds && lives > 0) {
+                        startRound(startRoundButton);
+                    }
+                });
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, "btd5-round-runner").start();
+    }
+
     private static class GameCanvas extends JPanel {
         private BTD5Game game;
         private javax.swing.Timer timer;
         private List<Particle> effects = new ArrayList<>();
         private List<Shuriken> shurikens = new ArrayList<>();
         private List<Pebble> pebbles = new ArrayList<>();
+        private java.awt.image.BufferedImage starterBalloonSprite;
+        private java.awt.image.BufferedImage skyBalloonSprite;
+        private java.awt.image.BufferedImage limeBalloonSprite;
         private java.awt.image.BufferedImage normalSprite;
         private java.awt.image.BufferedImage ninjaSprite;
 
@@ -268,7 +366,7 @@ public final class BTD5Game implements Game {
 
         GameCanvas(BTD5Game game) {
             this.game = game;
-            setBackground(new Color(20, 20, 20));
+            setBackground(new Color(86, 148, 67));
             setDoubleBuffered(true);
 
             addMouseListener(new MouseAdapter() {
@@ -293,6 +391,57 @@ public final class BTD5Game implements Game {
                                 repaint();
                                 return;
                             }
+                            int upX = btnX;
+                            int upY = btnY + 30;
+                            if (sx >= upX && sx <= upX + 80 && sy >= upY && sy <= upY + 24) {
+                                // Upgrade range
+                                if (!t.rangeUpgraded && game.money >= UPGRADE_RANGE_COST) {
+                                    game.money -= UPGRADE_RANGE_COST;
+                                    t.range += UPGRADE_RANGE_AMOUNT;
+                                    t.rangeUpgraded = true;
+                                    if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
+                                    repaint();
+                                } else if (t.rangeUpgraded && game.infoLabel != null) {
+                                    game.infoLabel.setText("Range already upgraded");
+                                } else if (game.infoLabel != null) {
+                                    game.infoLabel.setText("Not enough money for Range");
+                                }
+                                return;
+                            }
+                            int spdX = btnX;
+                            int spdY = btnY + 60;
+                            if (sx >= spdX && sx <= spdX + 80 && sy >= spdY && sy <= spdY + 24) {
+                                // Upgrade fire speed
+                                if (!t.speedUpgraded && game.money >= UPGRADE_SPEED_COST) {
+                                    game.money -= UPGRADE_SPEED_COST;
+                                    t.baseCooldown = Math.max(t.getMinCooldown(), (int) Math.round(t.baseCooldown * 0.8));
+                                    t.speedUpgraded = true;
+                                    if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
+                                    repaint();
+                                } else if (t.speedUpgraded && game.infoLabel != null) {
+                                    game.infoLabel.setText("Speed already upgraded");
+                                } else if (game.infoLabel != null) {
+                                    game.infoLabel.setText("Not enough money for Speed");
+                                }
+                                return;
+                            }
+                            int dmgX = btnX;
+                            int dmgY = btnY + 90;
+                            if (sx >= dmgX && sx <= dmgX + 80 && sy >= dmgY && sy <= dmgY + 24) {
+                                // Upgrade damage
+                                if (!t.damageUpgraded && game.money >= UPGRADE_DAMAGE_COST) {
+                                    game.money -= UPGRADE_DAMAGE_COST;
+                                    t.damage += 1;
+                                    t.damageUpgraded = true;
+                                    if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
+                                    repaint();
+                                } else if (t.damageUpgraded && game.infoLabel != null) {
+                                    game.infoLabel.setText("Damage already upgraded");
+                                } else if (game.infoLabel != null) {
+                                    game.infoLabel.setText("Not enough money for Damage");
+                                }
+                                return;
+                            }
                         }
                     }
 
@@ -309,6 +458,7 @@ public final class BTD5Game implements Game {
                     }
 
                     // Otherwise try to place a tower (but not on the road)
+                    for (Tower ot : game.getTowers()) ot.selected = false;
                     if (game.isPointOnRoad(wx, wy)) {
                         if (game.infoLabel != null) {
                             String prev = game.infoLabel.getText();
@@ -346,6 +496,9 @@ public final class BTD5Game implements Game {
             } else {
                 normalSprite = createSprite(TowerType.NORMAL, 30);
             }
+            starterBalloonSprite = createBalloonSprite(BALLOON_RADIUS * 3, BALLOON_RADIUS * 4, BalloonType.STARTER);
+            skyBalloonSprite = createBalloonSprite(BALLOON_RADIUS * 3, BALLOON_RADIUS * 4, BalloonType.SKY);
+            limeBalloonSprite = createBalloonSprite(BALLOON_RADIUS * 3, BALLOON_RADIUS * 4, BalloonType.LIME);
             ninjaSprite = createSprite(TowerType.NINJA, 30);
 
             timer = new javax.swing.Timer(40, ev -> {
@@ -358,56 +511,43 @@ public final class BTD5Game implements Game {
         private void updateGame() {
             List<int[]> points = game.getPath().getPoints();
             if (points.size() < 2) return;
+            double[] segLen = new double[points.size() - 1];
+            double[] cumLen = new double[points.size()];
+            for (int i = 0; i < points.size() - 1; i++) {
+                int[] p0 = points.get(i);
+                int[] p1 = points.get(i + 1);
+                segLen[i] = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+                cumLen[i + 1] = cumLen[i] + segLen[i];
+            }
+            double totalLen = cumLen[cumLen.length - 1];
 
             List<Balloon> toRemove = new ArrayList<>();
             for (Balloon b : new ArrayList<>(game.getBalloons())) {
-                if (b.pathIndex >= points.size() - 1) {
+                if (b.distance >= totalLen) {
                     // reached end: lose a life and schedule removal
                     toRemove.add(b);
                 } else {
-                    int[] p0 = points.get(b.pathIndex);
-                    int[] p1 = points.get(b.pathIndex + 1);
-                    b.progress += 0.03;
-                    if (b.progress >= 1.0) {
-                        b.progress = 0;
-                        b.pathIndex++;
-                    }
-                    double t = b.progress;
-                    b.x = (int) (p0[0] * (1 - t) + p1[0] * t);
-                    b.y = (int) (p0[1] * (1 - t) + p1[1] * t);
+                    b.distance += getBalloonSpeedForRound(game.round) * b.type.speedMultiplier;
+                    if (b.distance > totalLen) b.distance = totalLen;
+                    setBalloonPositionFromDistance(b, points, segLen, cumLen);
                     // Smooth display position to avoid visual jitter on turns or nudges
-                    b.displayX += (b.x - b.displayX) * 0.45;
-                    b.displayY += (b.y - b.displayY) * 0.45;
+                    b.displayX += (b.x - b.displayX) * 0.25;
+                    b.displayY += (b.y - b.displayY) * 0.25;
                 }
             }
 
-            // Prevent balloons overlapping on the track by pushing trailing balloons back (optimized)
+            // Prevent balloons overlapping on the track by spacing along path distance (no jitter/backtracking)
             if (!game.getBalloons().isEmpty()) {
                 List<Balloon> sorted = new ArrayList<>(game.getBalloons());
-                sorted.sort((a, b) -> Double.compare(b.pathIndex + b.progress, a.pathIndex + a.progress));
-                double minDist = BALLOON_RADIUS * 2.5;
+                sorted.sort((a, b) -> Double.compare(b.distance, a.distance));
+                double minDist = getBalloonSpacingForRound(game.round);
                 for (int i = 1; i < sorted.size(); i++) {
                     Balloon lead = sorted.get(i - 1);
                     Balloon trail = sorted.get(i);
-                    double dx = lead.x - trail.x;
-                    double dy = lead.y - trail.y;
-                    double dist = Math.hypot(dx, dy);
-                    if (dist < minDist) {
-                        // Gently push back (once, no loop) to avoid lag
-                        trail.progress -= 0.015;
-                        if (trail.progress < 0) {
-                            if (trail.pathIndex > 0) {
-                                trail.pathIndex--;
-                                trail.progress = 0.85;
-                            } else {
-                                trail.progress = 0;
-                            }
-                        }
-                        int[] tp0 = points.get(trail.pathIndex);
-                        int[] tp1 = points.get(Math.min(trail.pathIndex + 1, points.size() - 1));
-                        double t2 = trail.progress;
-                        trail.x = (int) (tp0[0] * (1 - t2) + tp1[0] * t2);
-                        trail.y = (int) (tp0[1] * (1 - t2) + tp1[1] * t2);
+                    double desired = lead.distance - minDist;
+                    if (trail.distance > desired) {
+                        trail.distance = Math.max(0, desired);
+                        setBalloonPositionFromDistance(trail, points, segLen, cumLen);
                     }
                 }
             }
@@ -418,7 +558,7 @@ public final class BTD5Game implements Game {
 
             // Process balloons that reached the end with a small visible delay
             for (Balloon b : new ArrayList<>(game.getBalloons())) {
-                if (b.pathIndex >= points.size() - 1) {
+                if (b.distance >= totalLen) {
                     if (!b.reachedEnd) {
                         b.reachedEnd = true;
                         b.endTimer = 6; // visible for ~6 ticks
@@ -449,11 +589,11 @@ public final class BTD5Game implements Game {
                     }
                     if (nearest != null) {
                         if (t.type == TowerType.NINJA) {
-                            shurikens.add(new Shuriken(t.getX(), t.getY(), nearest));
-                            t.cooldown = 20; // ninja cooldown
+                            shurikens.add(new Shuriken(t.getX(), t.getY(), nearest, t.damage));
+                            t.cooldown = t.baseCooldown;
                         } else { // NORMAL
-                            pebbles.add(new Pebble(t.getX(), t.getY(), nearest));
-                            t.cooldown = 30; // normal cooldown
+                            pebbles.add(new Pebble(t.getX(), t.getY(), nearest, t.damage));
+                            t.cooldown = t.baseCooldown;
                         }
                     }
                 }
@@ -466,7 +606,7 @@ public final class BTD5Game implements Game {
                 s.update();
                 if (!s.alive) {
                     deadS.add(s);
-                    if (s.target != null) popped.add(s.target);
+                    if (s.target != null && s.target.isDead()) popped.add(s.target);
                     // Create impact particles
                     for (int i = 0; i < 4; i++) {
                         double angle = (i / 4.0) * Math.PI * 2;
@@ -484,7 +624,7 @@ public final class BTD5Game implements Game {
                 p.update();
                 if (!p.alive) {
                     deadP.add(p);
-                    if (p.target != null) popped.add(p.target);
+                    if (p.target != null && p.target.isDead()) popped.add(p.target);
                     // Create impact particles
                     for (int i = 0; i < 4; i++) {
                         double angle = (i / 4.0) * Math.PI * 2;
@@ -499,11 +639,10 @@ public final class BTD5Game implements Game {
             // Award money and remove popped balloons (avoid double-counting)
             if (!popped.isEmpty()) {
                 java.util.Set<Balloon> unique = new java.util.HashSet<>(popped);
-                int count = unique.size();
-                game.money += count * MONEY_PER_POP;
-                if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
+                int reward = 0;
                 // Create pop effects at balloon positions before removal
                 for (Balloon b : unique) {
+                    reward += b.type.reward;
                     int bx = b.getX();
                     int by = b.getY();
                     // Spawn multiple particles radiating outward
@@ -515,6 +654,8 @@ public final class BTD5Game implements Game {
                     }
                     game.getBalloons().remove(b);
                 }
+                game.money += reward;
+                if (game.infoLabel != null) game.infoLabel.setText("Money: $" + game.money + " | Lives: " + game.lives + " | Round: " + game.round);
             }
 
             // Update and decay effects
@@ -533,7 +674,15 @@ public final class BTD5Game implements Game {
             Graphics2D g2d = (Graphics2D) g;
             g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-// Draw path as a jagged polyline, but first compute and apply fit-to-view transform
+            // Grass-like background
+            g2d.setPaint(new GradientPaint(0, 0, new Color(98, 168, 75), 0, getHeight(), new Color(70, 130, 55)));
+            g2d.fillRect(0, 0, getWidth(), getHeight());
+            g2d.setColor(new Color(120, 185, 95, 40));
+            for (int y = 0; y < getHeight(); y += 28) {
+                g2d.fillRect(0, y, getWidth(), 12);
+            }
+
+            // Draw path as a jagged polyline, but first compute and apply fit-to-view transform
             if (game.gamePath != null && game.gamePath.getPoints().size() > 1) {
                 List<int[]> points = game.gamePath.getPoints();
 
@@ -566,9 +715,11 @@ public final class BTD5Game implements Game {
 
                 g2d.setColor(new Color(220, 180, 110)); // brighter, higher-contrast road
                 // keep stroke independent of zoom by dividing by scale
-                float strokeWidth = (float)(44.0 / Math.max(0.0001, viewScale));
+                float strokeWidth = (float)(ROAD_DRAW_WIDTH / Math.max(0.0001, viewScale));
                 g2d.setStroke(new BasicStroke(strokeWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
                 g2d.draw(path);
+
+                drawEvenlySpacedPathArrows(g2d, points);
 
                 // Draw "End of track" sign near the final point (in world coords)
                 int[] endPoint = points.get(points.size() - 1);
@@ -588,15 +739,15 @@ public final class BTD5Game implements Game {
                 g2d.setTransform(old);
                 }
 
-            // Draw balloons (smaller, solid red fill) in world space so they match the path
+            // Draw balloons as a sprite in world space so they match the path
             java.awt.geom.AffineTransform oldBalloonTransform = g2d.getTransform();
             g2d.translate(viewOffsetX, viewOffsetY);
             g2d.scale(viewScale, viewScale);
-            g2d.setColor(new Color(200, 20, 20));
             for (Balloon b : game.getBalloons()) {
-                // draw using interpolated display positions (double precision) for smooth motion
-                Ellipse2D.Double ell = new Ellipse2D.Double(b.displayX - BALLOON_RADIUS, b.displayY - BALLOON_RADIUS, BALLOON_RADIUS * 2, BALLOON_RADIUS * 2);
-                g2d.fill(ell);
+                java.awt.image.BufferedImage balloonSprite = getBalloonSprite(b.type);
+                int spriteX = (int) Math.round(b.displayX - balloonSprite.getWidth() / 2.0);
+                int spriteY = (int) Math.round(b.displayY - balloonSprite.getHeight() * 0.68);
+                g2d.drawImage(balloonSprite, spriteX, spriteY, null);
             }
             g2d.setTransform(oldBalloonTransform);
 
@@ -613,9 +764,9 @@ public final class BTD5Game implements Game {
 
                 // If selected, draw range circle
                 if (tower.selected) {
-                    g2d.setColor(new Color(0, 150, 255, 40));
+                    g2d.setColor(new Color(0, 170, 255, 70));
                     g2d.fillOval(tower.getX() - tower.range, tower.getY() - tower.range, tower.range * 2, tower.range * 2);
-                    g2d.setColor(new Color(0, 150, 255, 140));
+                    g2d.setColor(new Color(0, 170, 255, 200));
                     g2d.setStroke(new BasicStroke((float)(2.0 / Math.max(0.0001, viewScale))));
                     g2d.drawOval(tower.getX() - tower.range, tower.getY() - tower.range, tower.range * 2, tower.range * 2);
                 }
@@ -665,9 +816,37 @@ public final class BTD5Game implements Game {
                     g.setColor(new Color(255, 255, 255));
                     g.setFont(new Font("Segoe UI", Font.BOLD, 11));
                     g.drawString("Sell ($" + (getCostFor(tower.type) / 2) + ")", btnX + 6, btnY + 16);
+                    int upX = btnX;
+                    int upY = btnY + 30;
+                    g.setColor(tower.rangeUpgraded ? new Color(90, 90, 90) : new Color(0, 120, 200));
+                    g.fillRect(upX, upY, 80, 24);
+                    g.setColor(new Color(255, 255, 255));
+                    g.drawString(tower.rangeUpgraded ? "Range (MAX)" : "Range ($" + UPGRADE_RANGE_COST + ")", upX + 6, upY + 16);
+                    int spdX = btnX;
+                    int spdY = btnY + 60;
+                    g.setColor(tower.speedUpgraded ? new Color(90, 90, 90) : new Color(200, 120, 0));
+                    g.fillRect(spdX, spdY, 80, 24);
+                    g.setColor(new Color(255, 255, 255));
+                    g.drawString(tower.speedUpgraded ? "Speed (MAX)" : "Speed ($" + UPGRADE_SPEED_COST + ")", spdX + 6, spdY + 16);
+                    int dmgX = btnX;
+                    int dmgY = btnY + 90;
+                    g.setColor(tower.damageUpgraded ? new Color(90, 90, 90) : new Color(160, 60, 200));
+                    g.fillRect(dmgX, dmgY, 80, 24);
+                    g.setColor(new Color(255, 255, 255));
+                    g.drawString(tower.damageUpgraded ? "Dmg (MAX)" : "Dmg ($" + UPGRADE_DAMAGE_COST + ")", dmgX + 6, dmgY + 16);
                     break;
                 }
             }
+        }
+
+        private java.awt.image.BufferedImage getBalloonSprite(BalloonType type) {
+            if (type == BalloonType.SKY) {
+                return skyBalloonSprite;
+            }
+            if (type == BalloonType.LIME) {
+                return limeBalloonSprite;
+            }
+            return starterBalloonSprite;
         }
 
         private static class Particle {
@@ -715,29 +894,116 @@ public final class BTD5Game implements Game {
         }
     }
 
-    // Return true if point lies on the drawn road (approx by stroking curve)
+    // Return true if point lies directly on the road polyline.
     public boolean isPointOnRoad(int x, int y) {
         if (gamePath == null || gamePath.getPoints().size() < 2) return false;
         List<int[]> points = gamePath.getPoints();
-        Path2D path = new Path2D.Double();
-        path.moveTo(points.get(0)[0], points.get(0)[1]);
-        for (int i = 1; i < points.size(); i++) {
-            int[] p0 = points.get(i - 1);
-            int[] p1 = points.get(i);
-            if (i < points.size() - 1) {
-                int[] p2 = points.get(i + 1);
-                int cpx = p1[0];
-                int cpy = p1[1];
-                int endx = (p1[0] + p2[0]) / 2;
-                int endy = (p1[1] + p2[1]) / 2;
-                path.quadTo(cpx, cpy, endx, endy);
-            } else {
-                path.lineTo(p1[0], p1[1]);
+        double halfWidth = ROAD_BLOCK_WIDTH / 2.0;
+        double maxDistSq = halfWidth * halfWidth;
+        for (int i = 0; i < points.size() - 1; i++) {
+            int[] p0 = points.get(i);
+            int[] p1 = points.get(i + 1);
+            if (distancePointToSegmentSq(x, y, p0[0], p0[1], p1[0], p1[1]) <= maxDistSq) {
+                return true;
             }
         }
-        java.awt.Stroke stroke = new BasicStroke(44, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
-        java.awt.Shape road = stroke.createStrokedShape(path);
-        return road.contains(x, y);
+        return false;
+    }
+
+    private static double distancePointToSegmentSq(double px, double py, double x1, double y1, double x2, double y2) {
+        double dx = x2 - x1;
+        double dy = y2 - y1;
+        if (dx == 0 && dy == 0) {
+            double ddx = px - x1;
+            double ddy = py - y1;
+            return ddx * ddx + ddy * ddy;
+        }
+        double t = ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy);
+        t = Math.max(0, Math.min(1, t));
+        double projX = x1 + t * dx;
+        double projY = y1 + t * dy;
+        double ddx = px - projX;
+        double ddy = py - projY;
+        return ddx * ddx + ddy * ddy;
+    }
+
+    private static void drawEvenlySpacedPathArrows(Graphics2D g2d, List<int[]> points) {
+        if (points.size() < 2) return;
+        double[] segLen = new double[points.size() - 1];
+        double[] cumLen = new double[points.size()];
+        for (int i = 0; i < points.size() - 1; i++) {
+            int[] p0 = points.get(i);
+            int[] p1 = points.get(i + 1);
+            segLen[i] = Math.hypot(p1[0] - p0[0], p1[1] - p0[1]);
+            cumLen[i + 1] = cumLen[i] + segLen[i];
+        }
+        double totalLen = cumLen[cumLen.length - 1];
+        if (totalLen < PATH_ARROW_SPACING * 0.5) return;
+
+        long tick = System.currentTimeMillis() / PATH_ARROW_BLINK_STEP_MS;
+        int seg = 0;
+        int arrowIndex = 0;
+        List<double[]> centers = new ArrayList<>();
+        for (double d = PATH_ARROW_SPACING * 0.5; d <= totalLen - PATH_ARROW_SPACING * 0.2; d += PATH_ARROW_SPACING) {
+            while (seg < segLen.length - 1 && d > cumLen[seg + 1]) seg++;
+            double len = Math.max(0.0001, segLen[seg]);
+            double t = (d - cumLen[seg]) / len;
+            int[] p0 = points.get(seg);
+            int[] p1 = points.get(seg + 1);
+            double ax = p0[0] + (p1[0] - p0[0]) * t;
+            double ay = p0[1] + (p1[1] - p0[1]) * t;
+            double dx = p1[0] - p0[0];
+            double dy = p1[1] - p0[1];
+
+            boolean overlaps = false;
+            for (double[] c : centers) {
+                if (Math.hypot(c[0] - ax, c[1] - ay) < PATH_ARROW_MIN_CENTER_DISTANCE) {
+                    overlaps = true;
+                    break;
+                }
+            }
+            if (overlaps) continue;
+            centers.add(new double[]{ax, ay});
+
+            boolean lit = Math.floorMod((int) (tick - arrowIndex), 4) == 0;
+            g2d.setColor(lit ? new Color(92, 76, 55, 112) : new Color(92, 76, 55, 52));
+            drawRoadArrow(g2d, ax, ay, dx, dy, PATH_ARROW_LENGTH, PATH_ARROW_HEAD_LENGTH, PATH_ARROW_HEAD_WIDTH, PATH_ARROW_SHAFT_WIDTH);
+            arrowIndex++;
+        }
+    }
+
+    private static void drawRoadArrow(Graphics2D g2d, double x, double y, double dx, double dy, double len, double headLen, double headWidth, float shaftWidth) {
+        double mag = Math.hypot(dx, dy);
+        if (mag < 0.0001) return;
+        double ux = dx / mag;
+        double uy = dy / mag;
+        double px = -uy;
+        double py = ux;
+
+        double tipXf = x + ux * len * 0.5;
+        double tipYf = y + uy * len * 0.5;
+        double headBaseXf = tipXf - ux * headLen;
+        double headBaseYf = tipYf - uy * headLen;
+        double tailXf = x - ux * len * 0.5;
+        double tailYf = y - uy * len * 0.5;
+
+        java.awt.Stroke oldStroke = g2d.getStroke();
+        g2d.setStroke(new BasicStroke(shaftWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        g2d.drawLine((int) Math.round(tailXf), (int) Math.round(tailYf), (int) Math.round(headBaseXf), (int) Math.round(headBaseYf));
+        g2d.setStroke(oldStroke);
+
+        int tipX = (int) Math.round(tipXf);
+        int tipY = (int) Math.round(tipYf);
+        int leftX = (int) Math.round(headBaseXf + px * headWidth * 0.5);
+        int leftY = (int) Math.round(headBaseYf + py * headWidth * 0.5);
+        int rightX = (int) Math.round(headBaseXf - px * headWidth * 0.5);
+        int rightY = (int) Math.round(headBaseYf - py * headWidth * 0.5);
+
+        Polygon arrow = new Polygon();
+        arrow.addPoint(tipX, tipY);
+        arrow.addPoint(leftX, leftY);
+        arrow.addPoint(rightX, rightY);
+        g2d.fillPolygon(arrow);
     }
 
     private static class Tower {
@@ -746,6 +1012,11 @@ public final class BTD5Game implements Game {
         private TowerType type;
         // simple cooldown so ninjas don't spam
         private int cooldown = 0;
+        private int baseCooldown;
+        private int damage = 1;
+        private boolean rangeUpgraded = false;
+        private boolean speedUpgraded = false;
+        private boolean damageUpgraded = false;
         // selected state for showing range
         private boolean selected = false;
         // range in pixels
@@ -756,6 +1027,7 @@ public final class BTD5Game implements Game {
             this.y = y;
             this.type = type;
             this.range = (type == TowerType.NINJA) ? 120 : 80;
+            this.baseCooldown = (type == TowerType.NINJA) ? 14 : 20;
         }
 
         public int getX() {
@@ -765,6 +1037,37 @@ public final class BTD5Game implements Game {
         public int getY() {
             return y;
         }
+
+        public int getMinCooldown() {
+            return (type == TowerType.NINJA) ? MIN_COOLDOWN_NINJA : MIN_COOLDOWN_NORMAL;
+        }
+    }
+
+    private static double getBalloonSpeedForRound(int round) {
+        return BASE_BALLOON_SPEED + Math.max(0, round - 1) * SPEED_PER_ROUND;
+    }
+
+    private static int getBalloonCountForRound(int round) {
+        return BASE_BALLOONS_PER_ROUND + Math.max(0, round - 1) * BALLOONS_PER_ROUND_INCREASE;
+    }
+
+    private static int getSpawnDelayForRound(int round) {
+        int delay = BASE_SPAWN_DELAY_MS - Math.max(0, round - 1) * SPAWN_DELAY_REDUCTION_PER_ROUND_MS;
+        return Math.max(MIN_SPAWN_DELAY_MS, delay);
+    }
+
+    private static int getSpawnBatchSizeForRound(int round) {
+        return Math.min(7, 2 + Math.max(0, round - 1) / 2);
+    }
+
+    private static double getBalloonSpacingForRound(int round) {
+        double spacing = BALLOON_RADIUS * 2.4 - Math.max(0, round - 1) * 1.8;
+        return Math.max(BALLOON_RADIUS * 1.15, spacing);
+    }
+
+    private static double getStartSpawnSeparationForRound(int round) {
+        double spacing = BALLOON_RADIUS * 3.4 - Math.max(0, round - 1) * 2.0;
+        return Math.max(BALLOON_RADIUS * 1.25, spacing);
     }
 
     // Helper to create simple programmatic sprites
@@ -794,17 +1097,65 @@ public final class BTD5Game implements Game {
         return img;
     }
 
+    private static java.awt.image.BufferedImage createBalloonSprite(int width, int height, BalloonType type) {
+        java.awt.image.BufferedImage img = new java.awt.image.BufferedImage(width, height, java.awt.image.BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = img.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+        int bodyWidth = Math.max(16, (int) Math.round(width * 0.68));
+        int bodyHeight = Math.max(20, (int) Math.round(height * 0.72));
+        int bodyX = (width - bodyWidth) / 2;
+        int bodyY = 2;
+
+        g.setPaint(new GradientPaint(
+                bodyX,
+                bodyY,
+                type.topColor,
+                bodyX + bodyWidth,
+                bodyY + bodyHeight,
+                type.bottomColor
+        ));
+        g.fillOval(bodyX, bodyY, bodyWidth, bodyHeight);
+
+        g.setColor(type.bottomColor.darker());
+        g.setStroke(new BasicStroke(2f));
+        g.drawOval(bodyX, bodyY, bodyWidth, bodyHeight);
+
+        g.setColor(new Color(255, 255, 255, 150));
+        g.fillOval(bodyX + bodyWidth / 5, bodyY + bodyHeight / 7, bodyWidth / 4, bodyHeight / 3);
+
+        int knotTopY = bodyY + bodyHeight - 2;
+        Polygon knot = new Polygon();
+        knot.addPoint(width / 2 - 4, knotTopY);
+        knot.addPoint(width / 2 + 4, knotTopY);
+        knot.addPoint(width / 2, knotTopY + 8);
+        g.setColor(type.bottomColor.darker());
+        g.fillPolygon(knot);
+
+        g.setColor(new Color(125, 92, 108));
+        g.setStroke(new BasicStroke(1.4f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+        Path2D.Double string = new Path2D.Double();
+        string.moveTo(width / 2.0, knotTopY + 7.0);
+        string.curveTo(width / 2.0 - 3.5, knotTopY + 13.0, width / 2.0 + 2.0, height - 10.0, width / 2.0 - 1.0, height - 2.0);
+        g.draw(string);
+
+        g.dispose();
+        return img;
+    }
+
     // Shuriken projectile - targets a balloon
     private static class Shuriken {
         double x, y;
         Balloon target;
+        int damage;
         double vx, vy;
         boolean alive = true;
 
-        Shuriken(double x, double y, Balloon target) {
+        Shuriken(double x, double y, Balloon target, int damage) {
             this.x = x;
             this.y = y;
             this.target = target;
+            this.damage = damage;
             double dx = target.getX() - x;
             double dy = target.getY() - y;
             double len = Math.hypot(dx, dy);
@@ -819,6 +1170,7 @@ public final class BTD5Game implements Game {
             double dy = target.getY() - y;
             if (Math.hypot(dx, dy) < BALLOON_RADIUS + SHURIKEN_RADIUS + 15) {
                 // hit (very forgiving collision to prevent misses)
+                target.applyDamage(damage);
                 alive = false;
             }
         }
@@ -828,13 +1180,15 @@ public final class BTD5Game implements Game {
     private static class Pebble {
         double x, y;
         Balloon target;
+        int damage;
         double vx, vy;
         boolean alive = true;
 
-        Pebble(double x, double y, Balloon target) {
+        Pebble(double x, double y, Balloon target, int damage) {
             this.x = x;
             this.y = y;
             this.target = target;
+            this.damage = damage;
             double dx = target.getX() - x;
             double dy = target.getY() - y;
             double len = Math.hypot(dx, dy);
@@ -849,27 +1203,34 @@ public final class BTD5Game implements Game {
             double dy = target.getY() - y;
             if (Math.hypot(dx, dy) < BALLOON_RADIUS + PEBBLE_RADIUS + 15) {
                 // hit (very forgiving collision to prevent misses)
+                target.applyDamage(damage);
                 alive = false;
             }
         }
     }
 
     private static class Balloon {
-        int x;
-        int y;
+        BalloonType type;
+        double x;
+        double y;
         // display coordinates used for smooth rendering (interpolated)
         double displayX;
         double displayY;
         int pathIndex;
         double progress; // 0 to 1 along current segment
+        double distance; // distance along path in pixels
+        int health;
         boolean reachedEnd = false;
         int endTimer = 0;
 
-        Balloon() {
+        Balloon(BalloonType type) {
+            this.type = type;
             this.x = 0;
             this.y = 150;
             this.pathIndex = 0;
             this.progress = 0;
+            this.distance = 0;
+            this.health = type.health;
             this.reachedEnd = false;
             this.endTimer = 0;
             this.displayX = this.x;
@@ -877,11 +1238,52 @@ public final class BTD5Game implements Game {
         }
 
         public int getX() {
-            return x;
+            return (int) Math.round(x);
         }
 
         public int getY() {
-            return y;
+            return (int) Math.round(y);
         }
+
+        public void applyDamage(int dmg) {
+            this.health -= Math.max(1, dmg);
+        }
+
+        public boolean isDead() {
+            return this.health <= 0;
+        }
+    }
+
+    private static void setBalloonPositionFromDistance(Balloon b, List<int[]> points, double[] segLen, double[] cumLen) {
+        double d = Math.max(0, b.distance);
+        int seg = 0;
+        while (seg < segLen.length - 1 && d > cumLen[seg + 1]) {
+            seg++;
+        }
+        double segStart = cumLen[seg];
+        double segDistance = segLen[seg] == 0 ? 1.0 : segLen[seg];
+        double t = (d - segStart) / segDistance;
+        int[] p0 = points.get(seg);
+        int[] p1 = points.get(seg + 1);
+        b.pathIndex = seg;
+        b.progress = Math.max(0, Math.min(1, t));
+        b.x = (p0[0] * (1 - b.progress) + p1[0] * b.progress);
+        b.y = (p0[1] * (1 - b.progress) + p1[1] * b.progress);
+    }
+
+    private static BalloonType getBalloonTypeForSpawn(int round, int spawned, int totalToSpawn) {
+        double progress = totalToSpawn <= 1 ? 1.0 : (double) spawned / (double) (totalToSpawn - 1);
+        if (round >= 5) {
+            if (progress > 0.72 || spawned % 6 == 5) {
+                return BalloonType.LIME;
+            }
+            if (progress > 0.35 || spawned % 4 == 3) {
+                return BalloonType.SKY;
+            }
+        }
+        if (round >= 3 && (progress > 0.45 || spawned % 5 == 4)) {
+            return BalloonType.SKY;
+        }
+        return BalloonType.STARTER;
     }
 }
